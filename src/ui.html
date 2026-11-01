@@ -374,7 +374,7 @@ body.no-eval #boardWrap { top: calc(56px + env(safe-area-inset-top, 0px)); botto
     <p id="endText"></p>
     <div class="btns">
       <button id="endWatch" class="alt" hidden>Смотреть дальше</button>
-      <button id="endReview" class="alt">Разбор ходов</button>
+      <button id="endReview" class="alt">Анализ партии</button>
       <button id="endUndo" class="alt" hidden>Отменить ход</button>
       <button id="endAgain">Ещё раз</button>
       <button id="endMenu" class="alt">Меню</button>
@@ -671,7 +671,7 @@ onmessage = function (e) {
       evals: [], evalQ: [], evalBusy: false, review: -1 };
     G.me = [3, 0, 1, 2].filter(function (q) { return G.kinds[q] === 'human'; })[0];
     if (G.me === undefined) G.me = [3, 0, 1, 2].filter(function (q) { return G.kinds[q] !== 'off'; })[0];
-    document.body.classList.toggle('no-eval', !S.evalOn || !!NET);
+    syncEvalUi();
     G.hist.push(snap(-1, -1));
     queueEval(0);
     document.body.classList.add('in-game');
@@ -746,7 +746,17 @@ onmessage = function (e) {
   function liveIdle() { return G && !G.over && G.view < 0 && !G.playing && !G.queue.length; }
   function canTap() { return liveIdle() && G.kinds[G.turn] === 'human' && !(NET && (NET.pendingTry || NET.undo)); }
 
+  // analysis is shown live only offline with the bar on; once a game is over it is always available
+  function evalActive() { return !!G && (G.over || (S.evalOn && !NET)); }
+  function syncEvalUi() {
+    var on = evalActive(), was = !document.body.classList.contains('no-eval');
+    document.body.classList.toggle('no-eval', !on);
+    $('hintBtn').hidden = !!NET && !(G && G.over);
+    if (on !== was) layout();
+    if (on && G && G.over) for (var k = 0; k < G.hist.length; k++) if (!G.evals[k]) queueEval(k);
+  }
   function renderLive() {
+    syncEvalUi();
     for (var i = 0; i < G.B.n; i++) drawCell(i, G.cnt, G.own);
     var tap = canTap(), idleNow = liveIdle();
     for (i = 0; i < G.B.n; i++) {
@@ -986,7 +996,10 @@ onmessage = function (e) {
     G.review = -1;
     G.view = v;
     if (v < 0) { tiles.forEach(function (t) { t._c = -2; }); idle(); }
-    else { renderSnap(G.hist[v]); updateReplay(); setStatus(); renderEval(); }
+    else {
+      if (evalActive() && !G.evals[v]) queueEval(v, true);
+      renderSnap(G.hist[v]); updateReplay(); setStatus(); renderEval();
+    }
   }
   function updateReplay() {
     if (!G) return;
@@ -1064,12 +1077,13 @@ onmessage = function (e) {
 
   // ----- evaluation: chances to win for "you", computed in the background after every move -----
   var EVAL_MS = 450;
-  function queueEval(k) {
-    if (!G || NET || !S.evalOn) return;
-    G.evalQ.push(k); runEval();
+  function queueEval(k, urgent) {
+    if (!G) return;
+    if (urgent) G.evalQ.unshift(k); else G.evalQ.push(k);
+    if (evalActive()) runEval();
   }
   function runEval() {
-    if (!G || G.evalBusy) return;
+    if (!G || G.evalBusy || !evalActive()) return;
     var k = -1;
     while (G.evalQ.length) { var c = G.evalQ.shift(); if (c < G.hist.length && !G.evals[c]) { k = c; break; } }
     if (k < 0) return;
@@ -1095,7 +1109,7 @@ onmessage = function (e) {
     return null;
   }
   function renderEval() {
-    if (!G || NET || !S.evalOn) return;
+    if (!evalActive()) return;
     var last = G.hist.length - 1, k = G.view >= 0 ? G.view : last, r = G.evals[k], j = k;
     while (!r && j > 0) r = G.evals[--j];
     var bar = $('evalBar'), txt = $('ebText');
@@ -1164,7 +1178,7 @@ onmessage = function (e) {
   // Live: your move on your turn. While looking back: the best move for whoever was to move in that position.
   var hintTok = 0;
   function hintAvailable() {
-    if (!G || NET) return false;
+    if (!G || (NET && !G.over)) return false;
     if (G.view >= 0) { var s = G.hist[G.view]; return !s.over; }
     return canTap();
   }
@@ -1224,7 +1238,7 @@ onmessage = function (e) {
     $('endOv').hidden = false;
   }
   $('endWatch').onclick = function () { if (G) G.watching = true; $('endOv').hidden = true; };
-  $('endReview').onclick = function () { $('endOv').hidden = true; setView(0); };
+  $('endReview').onclick = function () { $('endOv').hidden = true; syncEvalUi(); setView(0); };
   $('endAgain').onclick = again;
   $('endUndo').onclick = undo;
   $('endMenu').onclick = toMenu;
