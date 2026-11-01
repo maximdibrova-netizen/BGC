@@ -400,6 +400,19 @@ body.no-eval #boardWrap { top: calc(56px + env(safe-area-inset-top, 0px)); botto
   </div>
 </div>
 
+<div class="overlay" id="askOv" hidden>
+  <div class="dialog">
+    <div class="win-chip" id="askChip"></div>
+    <h3 id="askTitle">Отменить ход?</h3>
+    <p id="askText"></p>
+    <p class="note" id="askTimer"></p>
+    <div class="btns">
+      <button id="askYes">Согласен</button>
+      <button id="askNo" class="alt">Нет</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 
 <div class="overlay" id="rulesOv" hidden>
@@ -1017,7 +1030,7 @@ onmessage = function (e) {
     document.body.classList.add('in-game');
     $('menu').hidden = true; $('game').hidden = false; $('endOv').hidden = true; $('lobbyOv').hidden = true;
     $('againBtn').hidden = !!(NET && NET.role === 'guest');
-    $('undoBtn').hidden = !!NET; $('hintBtn').hidden = !!NET;
+    $('undoBtn').hidden = false; $('hintBtn').hidden = !!NET;
     buildTiles(); layout(); idle();
   }
   function startLocal() {
@@ -1084,7 +1097,7 @@ onmessage = function (e) {
   }
 
   function liveIdle() { return G && !G.over && G.view < 0 && !G.playing && !G.queue.length; }
-  function canTap() { return liveIdle() && G.kinds[G.turn] === 'human' && !(NET && NET.pendingTry); }
+  function canTap() { return liveIdle() && G.kinds[G.turn] === 'human' && !(NET && (NET.pendingTry || NET.undo)); }
 
   function renderLive() {
     for (var i = 0; i < G.B.n; i++) drawCell(i, G.cnt, G.own);
@@ -1191,6 +1204,7 @@ onmessage = function (e) {
     if (G.view >= 0 && !NET) return;              // offline: bots wait while you look back
     var p = G.turn;
     if (G.kinds[p] !== 'bot' || (NET && NET.role !== 'host')) return;
+    if (NET && NET.undo) return;                  // a take-back vote is running
     var n0 = G.hist.length;
     if (G.thinkingAt === n0) return;
     G.thinkingAt = n0;
@@ -1200,6 +1214,7 @@ onmessage = function (e) {
       var wait = Math.max(0, (G.watching ? 250 : 650) - (Date.now() - t0));
       setTimeout(function () {
         if (my !== token || !G || G.hist.length !== n0 || G.turn !== p || G.over) return;
+        if (NET && NET.undo) { G.thinkingAt = -1; return; }
         if (G.view >= 0 && !NET) { G.thinkingAt = -1; return; }
         decide(m, p);
       }, wait);
@@ -1334,10 +1349,11 @@ onmessage = function (e) {
     $('rpNext').disabled = $('rpLast').disabled = G.view < 0;
     $('replay').classList.toggle('viewing', G.view >= 0);
     $('hintBtn').disabled = !hintAvailable() && !$('hintBtn').classList.contains('thinking');
-    var ub = $('undoBtn');
-    ub.disabled = undoTarget() < 0;
-    ub.setAttribute('aria-label', G.view >= 0 ? 'Играть с этой позиции' : 'Отменить ход');
-    ub.title = G.view >= 0 ? 'Играть с этой позиции' : 'Отменить ход (Ctrl+Z)';
+    var ub = $('undoBtn'), net = !!NET;
+    ub.disabled = undoTarget() < 0 || !!(NET && NET.undo);
+    ub.classList.toggle('thinking', !!(NET && NET.undo && NET.undo.from === mySeat()));
+    var lbl = net ? 'Попросить отменить ход' : G.view >= 0 ? 'Играть с этой позиции' : 'Отменить ход';
+    ub.setAttribute('aria-label', lbl); ub.title = lbl + (net ? '' : ' (Ctrl+Z)');
   }
   function viewStep(d) {
     if (!G) return;
@@ -1361,15 +1377,26 @@ onmessage = function (e) {
 
   // ----- undo (single player only) -----
   // Live: go back to just before your last move, bot replies included. While looking back: continue from that position.
+  function mySeat() { return NET ? (NET.role === 'host' ? NET.roles.indexOf('h') : NET.seat) : -1; }
+  // the position just before seat q's last move (everyone's later moves are taken back too)
+  function undoTargetFor(q) {
+    if (!G) return -1;
+    for (var k = G.hist.length - 1; k >= 1; k--) if (G.hist[k].by === q) return k - 1;
+    return -1;
+  }
   function undoTarget() {
-    if (!G || NET) return -1;
+    if (!G) return -1;
+    if (NET) return undoTargetFor(mySeat());
     if (G.view >= 0) return G.view < G.hist.length - 1 ? G.view : -1;
     for (var k = G.hist.length - 1; k >= 1; k--) if (G.kinds[G.hist[k].by] === 'human') return k - 1;
     return -1;
   }
   function undo() {
-    var t = undoTarget();
-    if (t < 0) return;
+    if (NET) { requestUndo(); return; }
+    applyUndo(undoTarget());
+  }
+  function applyUndo(t, msg) {
+    if (!G || t < 0 || t >= G.hist.length) return;
     token++; stopAnims(); clearHint();          // cancels a running animation and a bot that is still thinking
     G.hist.length = t + 1;
     if (G.evals.length > t + 1) G.evals.length = t + 1;
@@ -1379,7 +1406,8 @@ onmessage = function (e) {
     G.endShown = false; G.outShown = false; G.watching = false;
     $('endOv').hidden = true;
     tiles.forEach(function (x) { x._c = -2; });
-    toast(t === 0 ? 'Вернулись к началу партии' : 'Ход отменён');
+    $('askOv').hidden = true;
+    toast(msg || (t === 0 ? 'Вернулись к началу партии' : 'Ход отменён'));
     idle();
   }
   $('undoBtn').onclick = undo;
@@ -1536,7 +1564,7 @@ onmessage = function (e) {
     var guest = NET && NET.role === 'guest';
     if (guest) $('endText').textContent += ' Новую партию начинает хозяин игры.';
     $('endAgain').hidden = guest;
-    $('endWatch').hidden = true; $('endReview').hidden = false; $('endUndo').hidden = !!NET;
+    $('endWatch').hidden = true; $('endReview').hidden = false; $('endUndo').hidden = false;
     $('endOv').hidden = false;
   }
   function showOut() {
@@ -1544,7 +1572,7 @@ onmessage = function (e) {
     chip.style.setProperty('--c', 'var(--ink-dim)'); chip.style.setProperty('--cd', 'var(--panel-dark)');
     $('endTitle').textContent = 'Ты выбыл';
     $('endText').textContent = NET ? 'Остальные доиграют без тебя. Можно посмотреть, кто победит.' : 'Боты доиграют без тебя. Можно посмотреть, кто победит.';
-    $('endWatch').hidden = false; $('endReview').hidden = true; $('endUndo').hidden = !!NET;
+    $('endWatch').hidden = false; $('endReview').hidden = true; $('endUndo').hidden = false;
     $('endAgain').hidden = !!(NET && NET.role === 'guest');
     $('endOv').hidden = false;
   }
@@ -1761,17 +1789,106 @@ onmessage = function (e) {
     if (d.t === 'pong') return;
     if (d.t === 'try') {
       var i = d.i | 0;
-      var ok = G && NET.setup && !G.over && G.turn === seat2 && d.n === G.hist.length && i >= 0 && i < G.B.n && G.own[i] === seat2;
+      var ok = G && NET.setup && !NET.undo && !G.over && G.turn === seat2 && d.n === G.hist.length && i >= 0 && i < G.B.n && G.own[i] === seat2;
       if (ok) decide(i, seat2); else { try { conn.send({ t: 'nack' }); } catch (e) {} }
-    } else if (d.t === 'needsync') { if (G) try { conn.send(syncMsg()); } catch (e) {} }
+    } else if (d.t === 'undoReq') { if (G) hostStartVote(seat2); }
+    else if (d.t === 'undoVote') { hostVote(seat2, d.id, !!d.ok); }
+    else if (d.t === 'needsync') { if (G) try { conn.send(syncMsg()); } catch (e) {} }
     else if (d.t === 'leave') { hostOnClose(conn); }
   }
+  // ===== take-back by agreement: the host runs the vote, every other connected human must agree =====
+  var undoSeq = 0;
+  function requestUndo() {
+    if (!NET || !G || NET.undo) return;
+    var me = mySeat(), t = undoTargetFor(me);
+    if (t < 0) { toast('Тебе пока нечего отменять'); return; }
+    if (NET.role === 'host') hostStartVote(me);
+    else { netSend({ t: 'undoReq', n: G.hist.length }); NET.undoAsked = Date.now(); toast('Спрашиваю у остальных…'); }
+  }
+  function voters(from) {
+    var v = [];
+    for (var q = 0; q < 4; q++) {
+      if (q === from || !(G.mask & (1 << q)) && !G.over) continue;
+      var r = NET.roles[q];
+      if (r === 'h' || (r === 'n' && NET.seats[q] && NET.seats[q].online)) v.push(q);
+    }
+    return v;
+  }
+  function hostStartVote(from) {
+    if (NET.undo) { hostSendTo(from, { t: 'undoNo', why: 'busy' }); return; }
+    var t = undoTargetFor(from);
+    if (t < 0) { hostSendTo(from, { t: 'undoNo', why: 'none' }); return; }
+    var v = voters(from);
+    if (!v.length) { hostApplyUndo(t, from); return; }   // nobody else to ask (only bots)
+    var u = { id: ++undoSeq, from: from, to: t, n: G.hist.length, need: v, yes: [], deadline: Date.now() + 30000 };
+    NET.undo = u;
+    u.timer = setTimeout(function () { if (NET && NET.undo === u) hostEndVote(false, -1, 'time'); }, 30000);
+    netBroadcast({ t: 'undoAsk', id: u.id, from: from, to: t, n: u.n });
+    showVote(u, true);
+    updateReplay(); renderLive();
+  }
+  function hostVote(q, id, ok) {
+    var u = NET && NET.undo;
+    if (!u || u.id !== id || u.need.indexOf(q) < 0) return;
+    if (!ok) { hostEndVote(false, q); return; }
+    if (u.yes.indexOf(q) < 0) u.yes.push(q);
+    if (u.need.every(function (x) { return u.yes.indexOf(x) >= 0; })) hostEndVote(true);
+  }
+  function hostEndVote(ok, by, why) {
+    var u = NET.undo; if (!u) return;
+    clearTimeout(u.timer); NET.undo = null;
+    if (ok && G.hist.length === u.n) hostApplyUndo(u.to, u.from, u.id);
+    else { netBroadcast({ t: 'undoNo', id: u.id, from: u.from, by: by, why: why || 'no' }); voteRefused(u.from, by, why); }
+  }
+  function hostApplyUndo(t, from, id) {
+    netBroadcast({ t: 'undo', id: id || 0, to: t, from: from });
+    applyUndo(t, undoMsg(from));
+    beginTurn();
+  }
+  function hostSendTo(q, m) { if (NET.roles[q] === 'h') { if (m.t === 'undoNo') voteRefused(q, -1, m.why); return; } var s = NET.seats[q]; if (s && s.conn && s.conn.open) try { s.conn.send(m); } catch (e) {} }
+  function undoMsg(from) { return from === mySeat() ? 'Ход отменён, ходи заново' : COLORS[from] + ' вернул свой ход'; }
+  function voteRefused(from, by, why) {
+    $('askOv').hidden = true;
+    if (!G) return;
+    if (from === mySeat()) toast(why === 'time' ? 'Никто не ответил, ход не отменён' : why === 'busy' ? 'Уже идёт другой запрос' : why === 'none' ? 'Тебе пока нечего отменять' : (by >= 0 ? COLORS[by] + ' не согласен' : 'Отмена не принята'));
+    else toast('Ход не отменён');
+    updateReplay(); renderLive(); beginTurn();
+  }
+  // the vote dialog (for those who are asked) / the waiting state (for the one who asked)
+  var voteTick = null;
+  function showVote(u, isHost) {
+    var me = mySeat();
+    clearInterval(voteTick);
+    if (u.from === me) { toast('Спрашиваю у остальных…'); updateReplay(); return; }
+    var chip = $('askChip');
+    chip.style.setProperty('--c', 'var(--p' + u.from + ')'); chip.style.setProperty('--cd', 'var(--p' + u.from + 'd)');
+    var back = G.hist.length - 1 - u.to;
+    $('askTitle').textContent = COLORS[u.from] + ' просит отменить ход';
+    $('askText').textContent = back === 1 ? 'Вернуть его последний ход.' : 'Вернуть игру на ' + back + ' ' + plural(back, 'ход', 'хода', 'ходов') + ' назад, до его последнего хода.';
+    $('askYes').disabled = $('askNo').disabled = false;
+    var end = Date.now() + 30000;
+    var tick = function () { var s = Math.max(0, Math.ceil((end - Date.now()) / 1000)); $('askTimer').textContent = 'Нет ответа через ' + s + ' с — значит «нет».'; if (!s) clearInterval(voteTick); };
+    tick(); voteTick = setInterval(tick, 500);
+    $('askOv').hidden = false;
+    var answer = function (ok) {
+      clearInterval(voteTick);
+      $('askYes').disabled = $('askNo').disabled = true;
+      $('askTimer').textContent = ok ? 'Ждём остальных…' : '';
+      if (!ok) $('askOv').hidden = true;
+      if (NET.role === 'host') hostVote(me, u.id, ok); else netSend({ t: 'undoVote', id: u.id, ok: ok });
+    };
+    $('askYes').onclick = function () { answer(true); };
+    $('askNo').onclick = function () { answer(false); };
+  }
+  function plural(n, a, b, c) { var m = n % 10, h = n % 100; return m === 1 && h !== 11 ? a : m >= 2 && m <= 4 && (h < 10 || h >= 20) ? b : c; }
+
   function hostOnClose(conn) {
     if (!NET) return;
     var q = seatOf(conn);
     if (q < 0 || !NET.seats[q].online) return;
     NET.seats[q].online = false; NET.online[q] = false;
     toast(COLORS[q] + ' отключился');
+    if (NET.undo && (NET.undo.from === q || NET.undo.need.indexOf(q) >= 0)) hostEndVote(false, q, 'gone');
     hostPushPeers();
   }
   function syncMsg() {
@@ -1853,6 +1970,13 @@ onmessage = function (e) {
       else if (d.n > G.hist.length) netSend({ t: 'needsync' });
     }
     else if (d.t === 'nack') { n.pendingTry = false; if (G && G.view < 0 && !G.playing) renderLive(); }
+    else if (d.t === 'undoAsk') { if (!G) return; n.undo = { id: d.id, from: d.from, to: d.to, n: d.n }; showVote(n.undo, false); updateReplay(); renderLive(); }
+    else if (d.t === 'undoNo') { var from = d.from === undefined ? n.seat : d.from; n.undo = null; voteRefused(from, d.by === undefined ? -1 : d.by, d.why); }
+    else if (d.t === 'undo') {
+      n.undo = null; clearInterval(voteTick);
+      if (!G) return;
+      if (d.to < G.hist.length) applyUndo(d.to, undoMsg(d.from)); else netSend({ t: 'needsync' });
+    }
   }
   function guestSync(d) {
     var n = NET; n.setup = d.setup;
