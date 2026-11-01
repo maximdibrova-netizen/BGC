@@ -134,6 +134,18 @@ body.in-game .corner.turn::after { content: ""; position: absolute; inset: calc(
 .sizer b { min-width: 26px; text-align: center; font: 800 20px/1 var(--display); font-variant-numeric: tabular-nums; }
 .sizer button { border: 0; width: 32px; height: 32px; border-radius: 9px; background: var(--panel-ink); color: #fff; font: 800 20px/1 var(--display); }
 .sizer button:disabled { opacity: .35; cursor: default; }
+/* map editor: tap a cell to cut a hole / restore it */
+.editor { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.ed-grid { display: grid; gap: 3px; width: min(100%, 330px); }
+.ed-grid button { aspect-ratio: 1; border: 0; padding: 0; border-radius: 22%; background: var(--tile); box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); min-width: 0; }
+.ed-grid button.hole { background: transparent; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--panel-ink) 35%, transparent); }
+.ed-grid button.dead { background: color-mix(in srgb, var(--tile) 35%, var(--panel)); }
+.ed-grid button.start { background: var(--sc); box-shadow: inset 0 0 0 2px rgba(255,255,255,.55); cursor: not-allowed; }
+.ed-tools { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.ed-tools button { border: 0; border-radius: 10px; padding: 7px 12px; font: 800 14px/1 var(--display); background: color-mix(in srgb, var(--panel-ink) 12%, var(--panel)); color: var(--panel-ink); }
+.ed-tools button[aria-pressed="true"] { background: var(--panel-ink); color: #fff; }
+.ed-note { margin: 0; font: 700 12.5px/1.3 var(--body); text-align: center; opacity: .85; text-wrap: balance; }
+.ed-note.bad { opacity: 1; color: #9b1020; background: #fff; border-radius: 10px; padding: 7px 10px; }
 /* chess-style coordinates: letters under the board (left to right), numbers on the left (bottom to top) */
 .coord { position: absolute; font: 800 max(10px, calc(var(--cell) * .26))/1 var(--display); color: var(--ink-dim); display: grid; place-items: center; pointer-events: none; }
 body:not(.coords) .coord { display: none; }
@@ -319,6 +331,15 @@ body.no-eval #boardWrap { top: calc(56px + env(safe-area-inset-top, 0px)); botto
         <div><span>Ширина</span><button id="wMinus" aria-label="Уже">−</button><b id="wVal">7</b><button id="wPlus" aria-label="Шире">+</button></div>
         <div><span>Высота</span><button id="hMinus" aria-label="Ниже">−</button><b id="hVal">7</b><button id="hPlus" aria-label="Выше">+</button></div>
       </div>
+      <div class="editor" id="editor" hidden>
+        <p class="ed-note">Тапни по клетке, чтобы убрать её или вернуть. Цветные — старты игроков.</p>
+        <div class="ed-grid" id="edGrid" role="grid" aria-label="Редактор поля"></div>
+        <div class="ed-tools">
+          <button id="edMirror" aria-pressed="true">Зеркально</button>
+          <button id="edFill">Заполнить всё</button>
+        </div>
+        <p class="ed-note" id="edMsg" hidden></p>
+      </div>
     </div>
     <div class="card">
       <h2>Сила ботов</h2>
@@ -489,15 +510,72 @@ onmessage = function (e) {
   // map buttons
   var mapsEl = $('maps');
   var SIZE_MIN = 4, SIZE_MAX = 12;
-  function customMap() {
-    var w = Math.max(SIZE_MIN, Math.min(SIZE_MAX, S.cw | 0)), h = Math.max(SIZE_MIN, Math.min(SIZE_MAX, S.ch | 0)), rows = [];
-    for (var r = 0; r < h; r++) rows.push(new Array(w + 1).join('#'));
-    return { id: 'custom', name: w + '×' + h, rows: rows };
+  function cdims() { return [Math.max(SIZE_MIN, Math.min(SIZE_MAX, S.cw | 0)), Math.max(SIZE_MIN, Math.min(SIZE_MAX, S.ch | 0))]; }
+  // the drawn layout (holes kept when the size changes: the old drawing is cropped / padded)
+  function cdraw() {
+    var d = cdims(), w = d[0], h = d[1], old = Array.isArray(S.cmap) ? S.cmap : [], rows = [];
+    for (var r = 0; r < h; r++) { var line = ''; for (var c = 0; c < w; c++) line += (old[r] && old[r][c] === '.') ? '.' : '#'; rows.push(line); }
+    return rows;
   }
+  function startCells(w, h) { return [[1, 1], [1, w - 2], [h - 2, w - 2], [h - 2, 1]]; }
+  // playable map: cells nobody can reach are dropped; all four starts must be joined, or the game could never end
+  function analyseDraw(rows) {
+    var h = rows.length, w = rows[0].length, seen = [], st = startCells(w, h), q = [st[0]], r, c;
+    for (r = 0; r < h; r++) seen.push(new Array(w).fill(false));
+    seen[st[0][0]][st[0][1]] = true;
+    while (q.length) {
+      var x = q.pop();
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+        var rr = x[0] + d[0], cc = x[1] + d[1];
+        if (rr >= 0 && rr < h && cc >= 0 && cc < w && !seen[rr][cc] && rows[rr][cc] === '#') { seen[rr][cc] = true; q.push([rr, cc]); }
+      });
+    }
+    var ok = st.every(function (p) { return seen[p[0]][p[1]]; });
+    var play = rows.map(function (line, rr) { return line.split('').map(function (ch, cc) { return ch === '#' && seen[rr][cc] ? '#' : '.'; }).join(''); });
+    return { ok: ok, rows: play, seen: seen };
+  }
+  function customMap() {
+    var rows = cdraw(), a = analyseDraw(rows);
+    return { id: 'custom', name: rows[0].length + '×' + rows.length, rows: a.ok ? a.rows : rows, ok: a.ok, draw: rows, seen: a.seen };
+  }
+  function renderEditor() {
+    var cm = customMap(), rows = cm.draw, h = rows.length, w = rows[0].length, g = $('edGrid');
+    var st = startCells(w, h), stIdx = {};
+    st.forEach(function (p, q) { stIdx[p[0] * 100 + p[1]] = q; });
+    g.style.gridTemplateColumns = 'repeat(' + w + ', 1fr)';
+    g.innerHTML = '';
+    for (var r = 0; r < h; r++) for (var c = 0; c < w; c++) {
+      var b = document.createElement('button'), q = stIdx[r * 100 + c];
+      b.dataset.r = r; b.dataset.c = c;
+      if (q !== undefined) { b.className = 'start'; b.style.setProperty('--sc', 'var(--p' + q + ')'); b.setAttribute('aria-label', 'Старт: ' + COLORS[q]); }
+      else if (rows[r][c] === '.') { b.className = 'hole'; b.setAttribute('aria-label', 'Дырка'); }
+      else if (!cm.seen[r][c] && cm.ok) { b.className = 'dead'; b.setAttribute('aria-label', 'Клетка, до которой не добраться'); }
+      else b.setAttribute('aria-label', 'Клетка');
+      g.appendChild(b);
+    }
+    $('edMirror').setAttribute('aria-pressed', String(S.cmirror !== false));
+    var msg = $('edMsg'), dead = 0;
+    if (cm.ok) for (r = 0; r < h; r++) for (c = 0; c < w; c++) if (rows[r][c] === '#' && !cm.seen[r][c]) dead++;
+    msg.hidden = cm.ok && !dead;
+    msg.className = 'ed-note' + (cm.ok ? '' : ' bad');
+    msg.textContent = cm.ok ? 'Бледные клетки отрезаны от всех: в игре их не будет.' : 'Дырки отрезали игроков друг от друга, так игра никогда не закончится. Соедини стартовые клетки.';
+  }
+  $('edGrid').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b || b.classList.contains('start')) return;
+    var rows = cdraw().map(function (l) { return l.split(''); }), h = rows.length, w = rows[0].length;
+    var r = +b.dataset.r, c = +b.dataset.c, to = rows[r][c] === '.' ? '#' : '.';
+    var cells = [[r, c]];
+    if (S.cmirror !== false) cells.push([r, w - 1 - c], [h - 1 - r, c], [h - 1 - r, w - 1 - c]);
+    var st = startCells(w, h).map(function (p) { return p[0] * 100 + p[1]; });
+    cells.forEach(function (p) { if (st.indexOf(p[0] * 100 + p[1]) < 0) rows[p[0]][p[1]] = to; });
+    S.cmap = rows.map(function (l) { return l.join(''); }); S.map = 'custom'; saveS(); renderMenu();
+  });
+  $('edMirror').onclick = function () { S.cmirror = S.cmirror === false; saveS(); renderEditor(); };
+  $('edFill').onclick = function () { S.cmap = []; saveS(); renderMenu(); };
   MAPS.concat([{ id: 'custom', name: 'Свой', custom: true }, { id: 'random', name: 'Любая' }]).forEach(function (m) {
     var b = document.createElement('button'); b.dataset.id = m.id; b.id = 'map-' + m.id;
     if (m.custom) {
-      b.innerHTML = '<span class="qmark" style="font-size:20px">↔</span><span id="customName">Свой</span>';
+      b.innerHTML = '<div class="mini" id="customMini"></div><span id="customName">Свой</span>';
     } else if (m.rows) {
       var W = m.rows[0].length, H = m.rows.length, g = '<div class="mini" style="grid-template-columns:repeat(' + W + ',1fr);grid-template-rows:repeat(' + H + ',1fr)">';
       m.rows.forEach(function (row) { for (var c = 0; c < W; c++) g += '<i' + (row[c] === '#' ? '' : ' class="no"') + '></i>'; });
@@ -574,11 +652,19 @@ onmessage = function (e) {
     $('wMinus').disabled = cm.rows[0].length <= SIZE_MIN; $('wPlus').disabled = cm.rows[0].length >= SIZE_MAX;
     $('hMinus').disabled = cm.rows.length <= SIZE_MIN; $('hPlus').disabled = cm.rows.length >= SIZE_MAX;
     $('customName').textContent = S.map === 'custom' ? cm.name : 'Свой';
+    var mini = $('customMini'), mw = cm.draw[0].length, mh = cm.draw.length, mg = '';
+    mini.style.gridTemplateColumns = 'repeat(' + mw + ',1fr)'; mini.style.gridTemplateRows = 'repeat(' + mh + ',1fr)';
+    cm.draw.forEach(function (row) { for (var c = 0; c < mw; c++) mg += '<i' + (row[c] === '#' ? '' : ' class="no"') + '></i>'; });
+    mini.innerHTML = mg;
+    $('editor').hidden = S.map !== 'custom';
+    if (S.map === 'custom') renderEditor();
+    var badMap = S.map === 'custom' && !cm.ok;
     if (!ONLINE) S.kinds = S.kinds.map(function (k) { return k === 'net' ? 'bot' : k; });
     var n = S.kinds.filter(function (k) { return k !== 'off'; }).length, hasNet = S.kinds.indexOf('net') >= 0;
-    $('playBtn').disabled = n < 2 || hasNet;
-    $('playHint').hidden = n >= 2 && !hasNet;
-    $('playHint').textContent = hasNet ? 'Угол «Друг» — для игры по сети: нажми «Создать игру» ниже.' : 'Нужно минимум два игрока.';
+    $('playBtn').disabled = n < 2 || hasNet || badMap;
+    $('playHint').hidden = n >= 2 && !hasNet && !badMap;
+    $('playHint').textContent = badMap ? 'На своём поле стартовые клетки должны быть соединены.' : hasNet ? 'Угол «Друг» — для игры по сети: нажми «Создать игру» ниже.' : 'Нужно минимум два игрока.';
+    $('onCreate').disabled = badMap;
     $('onlineCard').hidden = !ONLINE;
     $('soundBtn').innerHTML = S.sound ? ICON_SND : ICON_MUTE;
   }
