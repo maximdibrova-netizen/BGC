@@ -127,7 +127,16 @@ body.in-game .corner.turn::after { content: ""; position: absolute; inset: calc(
 .mini i { border-radius: 1.5px; background: currentColor; }
 .mini i.no { background: transparent; }
 .qmark { font: 800 34px/34px var(--display); height: 34px; }
-@media (max-width: 460px) { .maps { --cols: 3 !important; } }
+@media (max-width: 460px) { .maps { --cols: 4 !important; } }
+.sizer { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.sizer > div { display: flex; align-items: center; gap: 6px; background: color-mix(in srgb, var(--panel-ink) 12%, var(--panel)); border-radius: 12px; padding: 4px 6px; }
+.sizer span { font: 800 13px/1 var(--body); opacity: .8; }
+.sizer b { min-width: 26px; text-align: center; font: 800 20px/1 var(--display); font-variant-numeric: tabular-nums; }
+.sizer button { border: 0; width: 32px; height: 32px; border-radius: 9px; background: var(--panel-ink); color: #fff; font: 800 20px/1 var(--display); }
+.sizer button:disabled { opacity: .35; cursor: default; }
+/* chess-style coordinates: letters under the board (left to right), numbers on the left (bottom to top) */
+.coord { position: absolute; font: 800 max(10px, calc(var(--cell) * .26))/1 var(--display); color: var(--ink-dim); display: grid; place-items: center; pointer-events: none; }
+body:not(.coords) .coord { display: none; }
 .hint { font-size: 12.5px; font-weight: 700; color: var(--ink-dim); text-align: center; text-wrap: balance; }
 .hint b { color: var(--ink); }
 .play-row { display: flex; gap: 10px; justify-content: center; align-items: stretch; }
@@ -305,7 +314,11 @@ body.no-eval #boardWrap { top: calc(56px + env(safe-area-inset-top, 0px)); botto
     <p class="hint">Тапни по <b>углу</b>, чтобы поменять: человек → бот → пусто. Так можно играть и с друзьями на одном экране.</p>
     <div class="card">
       <h2>Карта</h2>
-      <div class="seg maps" id="maps" style="--cols:6"></div>
+      <div class="seg maps" id="maps" style="--cols:7"></div>
+      <div class="sizer" id="sizer" hidden>
+        <div><span>Ширина</span><button id="wMinus" aria-label="Уже">−</button><b id="wVal">7</b><button id="wPlus" aria-label="Шире">+</button></div>
+        <div><span>Высота</span><button id="hMinus" aria-label="Ниже">−</button><b id="hVal">7</b><button id="hPlus" aria-label="Выше">+</button></div>
+      </div>
     </div>
     <div class="card">
       <h2>Сила ботов</h2>
@@ -316,6 +329,13 @@ body.no-eval #boardWrap { top: calc(56px + env(safe-area-inset-top, 0px)); botto
       <div class="seg" id="evalSeg" style="--cols:2">
         <button id="ev-on" data-v="1">Показывать</button>
         <button id="ev-off" data-v="0">Скрыть</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Координаты (a1, b2…)</h2>
+      <div class="seg" id="coordSeg" style="--cols:2">
+        <button id="co-on" data-v="1">Показывать</button>
+        <button id="co-off" data-v="0">Скрыть</button>
       </div>
     </div>
     <div class="card">
@@ -424,7 +444,7 @@ body.no-eval #boardWrap { top: calc(56px + env(safe-area-inset-top, 0px)); botto
       <li>Точка, прилетевшая в чужую клетку, захватывает её вместе со всеми точками. Взрывы цепляют друг друга.</li>
       <li>Нет клеток — выбыл. Побеждает последний.</li>
     </ol>
-    <p style="font-size:13px;opacity:.8">В углах: ромбик — сколько у игрока клеток, кружок — сколько точек. Кнопки ⏮ ◀ ▶ ⏭ внизу (или стрелки и Home/End на клавиатуре) листают ходы партии. Стрелка-возврат отменяет твой последний ход в игре с ботами (Ctrl+Z), а при просмотре истории продолжает игру с выбранной позиции. Лампочка (H) показывает лучший ход: компьютер думает за тебя на уровне мастера.</p>
+    <p style="font-size:13px;opacity:.8">В углах: ромбик — сколько у игрока клеток, кружок — сколько точек. Кнопки ⏮ ◀ ▶ ⏭ внизу (или стрелки и Home/End на клавиатуре) листают ходы партии. Стрелка-возврат отменяет твой последний ход в игре с ботами (Ctrl+Z), а при просмотре истории продолжает игру с выбранной позиции. Лампочка (H) показывает лучший ход: компьютер думает за тебя на уровне мастера. Клавиша C включает и выключает координаты.</p>
     <div class="btns"><button id="rulesClose">Понятно</button></div>
   </div>
 </div>
@@ -461,16 +481,24 @@ onmessage = function (e) {
   corners.forEach(function (el, p) { el.style.setProperty('--pc', 'var(--p' + p + ')'); });
 
   // ---------- settings ----------
-  var S = { kinds: ['off', 'bot', 'off', 'human'], map: 'big', level: 2, first: 'me', sound: true, evalOn: true };
+  var S = { kinds: ['off', 'bot', 'off', 'human'], map: 'big', level: 2, first: 'me', sound: true, evalOn: true, coords: false, cw: 7, ch: 7 };
   try { var saved = JSON.parse(localStorage.getItem('bgc-tochki') || 'null'); if (saved && saved.kinds && saved.kinds.length === 4) Object.assign(S, saved); } catch (e) {}
   if (!S.kinds.some(function (k) { return k !== 'off'; })) S.kinds = ['off', 'bot', 'off', 'human'];
   function saveS() { try { localStorage.setItem('bgc-tochki', JSON.stringify(S)); } catch (e) {} }
 
   // map buttons
   var mapsEl = $('maps');
-  MAPS.concat([{ id: 'random', name: 'Любая' }]).forEach(function (m) {
+  var SIZE_MIN = 4, SIZE_MAX = 12;
+  function customMap() {
+    var w = Math.max(SIZE_MIN, Math.min(SIZE_MAX, S.cw | 0)), h = Math.max(SIZE_MIN, Math.min(SIZE_MAX, S.ch | 0)), rows = [];
+    for (var r = 0; r < h; r++) rows.push(new Array(w + 1).join('#'));
+    return { id: 'custom', name: w + '×' + h, rows: rows };
+  }
+  MAPS.concat([{ id: 'custom', name: 'Свой', custom: true }, { id: 'random', name: 'Любая' }]).forEach(function (m) {
     var b = document.createElement('button'); b.dataset.id = m.id; b.id = 'map-' + m.id;
-    if (m.rows) {
+    if (m.custom) {
+      b.innerHTML = '<span class="qmark" style="font-size:20px">↔</span><span id="customName">Свой</span>';
+    } else if (m.rows) {
       var W = m.rows[0].length, H = m.rows.length, g = '<div class="mini" style="grid-template-columns:repeat(' + W + ',1fr);grid-template-rows:repeat(' + H + ',1fr)">';
       m.rows.forEach(function (row) { for (var c = 0; c < W; c++) g += '<i' + (row[c] === '#' ? '' : ' class="no"') + '></i>'; });
       b.innerHTML = g + '</div>' + m.name;
@@ -499,6 +527,14 @@ onmessage = function (e) {
   Array.prototype.forEach.call(document.querySelectorAll('#evalSeg button'), function (b) {
     b.onclick = function () { S.evalOn = b.dataset.v === '1'; saveS(); renderMenu(); };
   });
+  Array.prototype.forEach.call(document.querySelectorAll('#coordSeg button'), function (b) {
+    b.onclick = function () { setCoords(b.dataset.v === '1'); };
+  });
+  function setCoords(on) { S.coords = !!on; saveS(); document.body.classList.toggle('coords', S.coords); renderMenu(); if (G) { layout(); setStatus(); } }
+  document.body.classList.toggle('coords', !!S.coords);
+  function sizeStep(k, d) { S[k] = Math.max(SIZE_MIN, Math.min(SIZE_MAX, (S[k] | 0) + d)); S.map = 'custom'; saveS(); renderMenu(); }
+  $('wMinus').onclick = function () { sizeStep('cw', -1); }; $('wPlus').onclick = function () { sizeStep('cw', 1); };
+  $('hMinus').onclick = function () { sizeStep('ch', -1); }; $('hPlus').onclick = function () { sizeStep('ch', 1); };
   corners.forEach(function (el, p) {
     el.onclick = function () {
       if (G) return;
@@ -531,6 +567,13 @@ onmessage = function (e) {
     Array.prototype.forEach.call(lvEl.children, function (b, i) { b.setAttribute('aria-pressed', String(i === S.level)); });
     Array.prototype.forEach.call(document.querySelectorAll('#first button'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.v === S.first)); });
     Array.prototype.forEach.call(document.querySelectorAll('#evalSeg button'), function (b) { b.setAttribute('aria-pressed', String((b.dataset.v === '1') === !!S.evalOn)); });
+    Array.prototype.forEach.call(document.querySelectorAll('#coordSeg button'), function (b) { b.setAttribute('aria-pressed', String((b.dataset.v === '1') === !!S.coords)); });
+    var cm = customMap();
+    $('sizer').hidden = S.map !== 'custom';
+    $('wVal').textContent = cm.rows[0].length; $('hVal').textContent = cm.rows.length;
+    $('wMinus').disabled = cm.rows[0].length <= SIZE_MIN; $('wPlus').disabled = cm.rows[0].length >= SIZE_MAX;
+    $('hMinus').disabled = cm.rows.length <= SIZE_MIN; $('hPlus').disabled = cm.rows.length >= SIZE_MAX;
+    $('customName').textContent = S.map === 'custom' ? cm.name : 'Свой';
     if (!ONLINE) S.kinds = S.kinds.map(function (k) { return k === 'net' ? 'bot' : k; });
     var n = S.kinds.filter(function (k) { return k !== 'off'; }).length, hasNet = S.kinds.indexOf('net') >= 0;
     $('playBtn').disabled = n < 2 || hasNet;
@@ -647,6 +690,7 @@ onmessage = function (e) {
   var NET = null; // online session, see the "online" section
 
   function pickMap(id) {
+    if (id === 'custom') return customMap();
     return id === 'random' ? MAPS[Math.floor(Math.random() * MAPS.length)] : (MAPS.filter(function (m) { return m.id === id; })[0] || MAPS[1]);
   }
   function firstSeat(kinds, mode) {
@@ -685,11 +729,16 @@ onmessage = function (e) {
     newGame({ rows: map.rows, mapId: map.id, kinds: kinds, level: S.level, first: firstSeat(kinds, S.first) });
   }
 
+  // chess-style name of a cell: column letter (a = left) + row number (1 = bottom). Same for every player.
+  function cellName(i) { var rc = G.B.rc[i]; return String.fromCharCode(97 + rc[1]) + (G.B.H - rc[0]); }
   function buildTiles() {
     boardEl.innerHTML = ''; tiles = [];
+    G.coordEls = [];
+    for (var c = 0; c < G.B.W; c++) { var e = document.createElement('div'); e.className = 'coord'; e.textContent = String.fromCharCode(97 + c); e.dataset.c = c; boardEl.appendChild(e); G.coordEls.push(e); }
+    for (var r = 0; r < G.B.H; r++) { var e2 = document.createElement('div'); e2.className = 'coord'; e2.textContent = G.B.H - r; e2.dataset.r = r; boardEl.appendChild(e2); G.coordEls.push(e2); }
     for (var i = 0; i < G.B.n; i++) {
       var t = document.createElement('button');
-      t.className = 'tile'; t.dataset.i = i; t.setAttribute('aria-label', 'Клетка ' + (G.B.rc[i][0] + 1) + ', ' + (G.B.rc[i][1] + 1));
+      t.className = 'tile'; t.dataset.i = i; t.setAttribute('aria-label', 'Клетка ' + cellName(i));
       t.innerHTML = '<div class="pc" hidden></div><div class="pips"></div>';
       t.addEventListener('click', onTileClick);
       t._c = -2; t._o = -2;
@@ -704,13 +753,19 @@ onmessage = function (e) {
     var ev = !document.body.classList.contains('no-eval');
     var availW = vw - 32, availH = vh - (ev ? 68 + 160 : 56 + 118) - 12;
     if (vw > vh) availW = vw - 2 * R - 24; // landscape: keep the corners clear
-    var W = G.B.W, H = G.B.H;
-    pitch = Math.max(16, Math.floor(Math.min(availW / W, availH / H, 96)));
+    var W = G.B.W, H = G.B.H, cx = S.coords ? .55 : 0;   // room for the labels
+    pitch = Math.max(16, Math.floor(Math.min(availW / (W + cx), availH / (H + cx), 96)));
     cellPx = Math.round(pitch * .965);
     var gap = pitch - cellPx;
     boardEl.style.width = (W * pitch - gap) + 'px'; boardEl.style.height = (H * pitch - gap) + 'px';
     boardEl.style.setProperty('--cell', cellPx + 'px');
     tiles.forEach(function (t, i) { t.style.left = (G.B.rc[i][1] * pitch) + 'px'; t.style.top = (G.B.rc[i][0] * pitch) + 'px'; });
+    var lab = Math.round(pitch * .5);
+    (G.coordEls || []).forEach(function (e) {
+      if (e.dataset.c !== undefined) { e.style.left = (+e.dataset.c * pitch) + 'px'; e.style.top = (H * pitch - gap + 2) + 'px'; e.style.width = cellPx + 'px'; e.style.height = lab + 'px'; }
+      else { e.style.left = (-lab - 2) + 'px'; e.style.top = (+e.dataset.r * pitch) + 'px'; e.style.width = lab + 'px'; e.style.height = cellPx + 'px'; }
+    });
+    boardEl.style.transform = S.coords ? 'translate(' + Math.round(lab / 2) + 'px,' + Math.round(-lab / 2) + 'px)' : '';
   }
   window.addEventListener('resize', layout);
 
@@ -807,7 +862,7 @@ onmessage = function (e) {
         return;
       }
       st.innerHTML = '<span class="view-tag">Просмотр</span>' + (G.view === 0 ? '<span>Начало партии</span>' :
-        sw(s.by) + '<span>Ход ' + G.view + ': ' + COLORS[s.by] + '</span>' + tag);
+        sw(s.by) + '<span>Ход ' + G.view + ': ' + COLORS[s.by] + (S.coords && s.cell >= 0 ? ' · ' + cellName(s.cell) : '') + '</span>' + tag);
       return;
     }
     if (G.over) { st.innerHTML = sw(G.winner) + '<span>' + COLORS_GEN[G.winner] + ' победили</span>'; return; }
@@ -1027,6 +1082,7 @@ onmessage = function (e) {
   $('rpNext').onclick = function () { viewStep(1); };
   $('rpLast').onclick = function () { viewStep('last'); };
   document.addEventListener('keydown', function (e) {
+    if (G && !$('game').hidden && !e.ctrlKey && !e.metaKey && !e.altKey && /^[cCсС]$/.test(e.key) && !/INPUT|TEXTAREA/.test((e.target || {}).tagName || '')) { setCoords(!S.coords); toast(S.coords ? 'Координаты включены' : 'Координаты скрыты'); return; }
     if (!G || $('game').hidden || /INPUT|TEXTAREA/.test((e.target || {}).tagName || '')) return;
     if (!$('endOv').hidden || !$('rulesOv').hidden || !$('lobbyOv').hidden) return;
     var k = e.key;
