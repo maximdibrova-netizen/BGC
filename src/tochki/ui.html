@@ -371,7 +371,7 @@ body.no-eval #boardWrap { top: calc(56px + env(safe-area-inset-top, 0px)); botto
       <button class="sq-btn" id="rulesBtn" aria-label="Правила">?</button>
     </div>
     <p class="hint" id="playHint" hidden>Нужно минимум два игрока.</p>
-    <p class="hint" id="verLine" style="opacity:.6;font-size:11.5px">Версия от /*VER*/</p>
+    <p class="hint" id="verLine" style="font-size:11.5px"><a href="../" style="color:var(--ink-dim)">← все игры</a> · <span style="opacity:.6">версия от /*VER*/</span></p>
     <div class="card" id="onlineCard" hidden>
       <h2>Онлайн с друзьями</h2>
       <div class="seg" style="--cols:2">
@@ -1479,8 +1479,8 @@ onmessage = function (e) {
     $('lbErr').hidden = !NET.err; $('lbErr').textContent = NET.err || '';
     $('lbRetry').hidden = !NET.err;
     var link = '';
-    if (host && NET.ready && /^https?:/.test(location.protocol)) link = location.origin + location.pathname + location.search + '#' + NET.code;
-    $('lbCode').hidden = !(host && NET.ready); $('lbCode').textContent = NET.code;
+    if (host && NET.ready && !window.IN_ROOM && /^https?:/.test(location.protocol)) link = location.origin + location.pathname + location.search + '#' + NET.code;
+    $('lbCode').hidden = !(host && NET.ready) || !!window.IN_ROOM; $('lbCode').textContent = NET.code;
     $('lbLinkRow').hidden = !link; $('lbLink').value = link;
     var txt;
     if (NET.err) txt = '';
@@ -1741,7 +1741,7 @@ onmessage = function (e) {
   function connectToHost(n) {
     var conn = n.peer.connect(PEER_PREFIX + n.code, { reliable: true, serialization: 'json' });
     n.conn = conn;
-    var timer = setTimeout(function () {
+    var timer = window.IN_ROOM ? 0 : setTimeout(function () {
       if (NET === n && !n.opened) guestFail('Не получилось соединиться напрямую. Похоже, сеть блокирует прямое подключение (так бывает в мобильном интернете и рабочем Wi-Fi). Попробуй другую сеть.');
     }, 15000);
     conn.on('open', function () { if (NET !== n) return; n.opened = true; n.seen = Date.now(); clearTimeout(timer); conn.send({ t: 'hello', cid: n.cid }); });
